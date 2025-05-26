@@ -24,7 +24,7 @@ const MAX_RETRIES: u8 = 3;
 
 #[derive(Debug)]
 pub struct ChurchClient {
-    http_client: Client,
+    pub http_client: Client,
     cookie_store: Arc<CookieStoreMutex>,
     pub env: env::Env,
     bearer_token: Option<BearerToken>,
@@ -241,6 +241,15 @@ impl ChurchClient {
         self.bearer_token = Some(token.clone());
 
         Ok(token)
+    }
+
+    pub async fn refresh_auth(&mut self) -> anyhow::Result<BearerToken> {
+        match &self.bearer_token {
+            Some(token) => Ok(token.clone()),
+            None => {
+                Ok(self.login().await?)
+            }
+        }
     }
 
     /// Gets the list of everyone from the referral manager. This is a HUGE request at roughly 8mb in the CSDM

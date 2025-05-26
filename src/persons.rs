@@ -1,10 +1,12 @@
 // Jackson Coxson
 
-use chrono::naive::serde::ts_milliseconds;
-use chrono::NaiveDateTime;
+use chrono::{naive::serde::ts_milliseconds, Duration};
+use chrono::{NaiveDateTime, Utc};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+
+use crate::church::ChurchClient;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Persons {
@@ -37,6 +39,9 @@ pub struct Person {
     #[serde(rename = "districtId")]
     pub district_id: Option<usize>,
 
+    #[serde(rename = "areaId")]
+    pub area_id: Option<usize>,
+
     #[serde(rename = "areaName")]
     pub area_name: Option<String>,
 
@@ -60,6 +65,21 @@ impl Person {
         } else {
             Vec::new()
         }
+    }
+
+    pub async fn get_person_list(church_client: &mut ChurchClient) -> anyhow::Result<Vec<Self>> {
+        let persons_list = church_client.get_cached_people_list().await?.to_vec();
+        let now = Utc::now().naive_utc();
+        let persons_list = persons_list
+            .into_iter()
+            .filter(|x| {
+                x.referral_status != self::ReferralStatus::NotAttempted
+                    && x.person_status < self::PersonStatus::NewMember
+                    && now.signed_duration_since(x.assigned_date) < Duration::days(42)
+            })
+            .collect();
+
+        Ok(persons_list)
     }
 }
 
