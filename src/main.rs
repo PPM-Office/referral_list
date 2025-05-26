@@ -6,6 +6,7 @@ use chrono::{Duration, Utc};
 use church::ChurchClient;
 use dialoguer::{theme::ColorfulTheme, Select};
 use indicatif::ProgressBar;
+use leaderboard::LeaderBoard;
 use log::info;
 
 mod bearer;
@@ -14,12 +15,15 @@ mod env;
 mod holly;
 mod persons;
 mod report;
+mod missionary;
+mod leaderboard;
 
-const CLI_OPTIONS: [&str; 6] = ["report", "generate", "average", "holly", "settings", "exit"];
-const CLI_DESCRIPTONS: [&str; 6] = [
+const CLI_OPTIONS: [&str; 7] = ["report", "generate", "average", "leaderboard", "holly", "settings", "exit"];
+const CLI_DESCRIPTONS: [&str; 7] = [
     "Reads today's report of uncontacted referrals or fetches a new one",
     "Generates a new list of uncontacted referrals, regardless of the cache.",
     "Gets the average contact time in minutes between zones",
+    "Gets the top 10 quickest companionships in the mission",
     "Connects to Holly and responds to messages",
     "Change the settings for Holly",
     "Exits the program",
@@ -86,6 +90,11 @@ async fn parse_argument(arg: &str, church_client: &mut ChurchClient) -> anyhow::
             }
             Ok(true)
         }
+        "leaderboard" => {
+            let leaderboard = LeaderBoard::generate_leaderboard(church_client, 15, false).await?;
+            leaderboard.pretty_print();
+            Ok(true)
+        }
         "holly" => {
             holly::main(church_client).await?;
             Ok(false)
@@ -121,10 +130,9 @@ pub async fn generate_report(church_client: &mut ChurchClient) -> anyhow::Result
     let persons_list: Vec<persons::Person> = persons_list
         .into_iter()
         .filter(|x| {
-            (x.referral_status != persons::ReferralStatus::Successful
+            x.referral_status == persons::ReferralStatus::NotAttempted
                 && x.person_status < persons::PersonStatus::NewMember
-                && now.signed_duration_since(x.assigned_date) > Duration::hours(48))
-            || x.referral_status == persons::ReferralStatus::NotAttempted
+                && now.signed_duration_since(x.assigned_date) < Duration::hours(48)
         })
         .collect();
     info!("{} uncontacted referrals", persons_list.len());
@@ -133,12 +141,13 @@ pub async fn generate_report(church_client: &mut ChurchClient) -> anyhow::Result
     let bar = ProgressBar::new(persons_list.len() as u64);
     for person in persons_list {
         bar.inc(1);
-        if match church_client.get_person_last_contact(&person).await? {
-            Some(t) => now.signed_duration_since(t) > Duration::hours(48),
-            None => true,
-        } {
-            report.add_person(person);
-        }
+        report.add_person(person);
+        // if match church_client.get_person_last_contact(&person).await? {
+        //     Some(t) => now.signed_duration_since(t) > Duration::hours(48),
+        //     None => true,
+        // } {
+        //     report.add_person(person);
+        // }
     }
 
     report.save_report(&church_client.env)?;
@@ -150,16 +159,7 @@ pub async fn get_average(
 ) -> anyhow::Result<HashMap<String, usize>> {
     let mut contacts = church_client.env.load_contacts()?;
 
-    let persons_list = church_client.get_cached_people_list().await?.to_vec();
-    let now = Utc::now().naive_utc();
-    let persons_list: Vec<persons::Person> = persons_list
-        .into_iter()
-        .filter(|x| {
-            x.referral_status != persons::ReferralStatus::NotAttempted
-                && (x.person_status < persons::PersonStatus::NewMember)
-                && now.signed_duration_since(x.assigned_date) < Duration::hours(24)
-        })
-        .collect();
+    let persons_list = persons::Person::get_person_list(church_client).await?;
 
     let mut zones = HashMap::new();
     let bar = ProgressBar::new(persons_list.len() as u64);
