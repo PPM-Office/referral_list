@@ -97,11 +97,13 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                             avg_report = format!("{avg_report}\n{k}: {hours}h {minutes}m");
                         }
                         for (zone_id, chat_id) in &holly_config.zone_chats {
-                            let msg = if let Some(p) = report.get_pretty_zone(zone_id) {
-                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_report}\n\nThese friends have not been successfully contacted yet. Please continue to be creative and persistent in your contacting!\n\n{p}")
+                            let average_areas_report = crate::get_area_average_in_zone(church_client, *zone_id).await?;
+                            let avg_reporting = crate::pretty_print_average_areas(average_areas_report);
+                            let msg = if let Some(p) = report.get_pretty_zone_uncontacted_count(zone_id) {                                
+                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_reporting}\n\nThere are this many referrals. Please continue to be creative and persistent in your contacting!\n\n{p}")
                             } else {
                                 info!("No uncontacted referrals in {zone_id}");
-                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_report}\n\nNo uncontacted referrals! GREAT work!")
+                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_reporting}\n\nNo uncontacted referrals! GREAT work!")
                             };
                             info!("Sending {msg} to {chat_id}");
                             stream.write_all(&Message { content: msg, chat_id: chat_id.to_string(), ..Default::default() }.to_bytes()).await?;

@@ -74,6 +74,19 @@ impl Report {
         Some(self.pretty_print_zone(zone_id, areas))
     }
 
+    pub fn get_pretty_zone_uncontacted_count(&self, zone_id: &usize) -> Option<String> {
+        let areas = self.people.get(zone_id)?;
+        let mut res = "".to_string();
+        for (area, people) in areas {
+            res = format!("{res}\n - {area}: {}", people.len());
+        }
+        if res.is_empty() {
+            None
+        } else {
+            Some(res)
+        }
+    }
+
     pub fn save_report(&self, env: &crate::env::Env) -> anyhow::Result<()> {
         info!("Saving report");
         let today = chrono::Local::now();

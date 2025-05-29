@@ -196,3 +196,67 @@ pub async fn get_average(
     }
     Ok(res)
 }
+
+ pub async fn get_area_average_in_zone(
+    church_client: &mut ChurchClient,
+    zone_id: usize
+) -> anyhow::Result<HashMap<String, (usize, usize)>> {
+    let mut contacts = church_client.env.load_contacts()?;
+
+    let persons_list = church_client.get_cached_people_list().await?.to_vec();
+    let now = Utc::now().naive_utc();
+    let persons_list: Vec<persons::Person> = persons_list
+        .into_iter()
+        .filter(|x| {
+            x.referral_status != persons::ReferralStatus::NotAttempted
+                && (x.person_status < persons::PersonStatus::NewMember)
+                && now.signed_duration_since(x.assigned_date) < Duration::hours(24)
+                && x.zone_id == Some(zone_id)
+        })
+        .collect();
+
+    let mut areas = HashMap::new();
+    let bar = ProgressBar::new(persons_list.len() as u64);
+    for person in persons_list {
+        if let Some(area_name) = &person.area_name {
+            bar.inc(1);
+            let t = if let Some(t) = contacts.get(&person.guid) {
+                t.to_owned()
+            } else if let Some(t) = church_client.get_person_contact_time(&person).await? {
+                contacts.insert(person.guid, t);
+                t
+            } else {
+                continue;
+            };
+            let area = match areas.get_mut(area_name) {
+                Some(z) => z,
+                None => {
+                    areas.insert(area_name.clone(), Vec::new());
+                    areas.get_mut(area_name).unwrap()
+                }
+            };
+            area.push(t);
+        }
+    }
+    bar.finish();
+
+    church_client.env.save_contacts(&contacts)?;
+
+    let mut res = HashMap::new();
+    for (k, v) in areas {
+        let sum: usize = v.iter().sum();
+        let avg = sum / v.len();
+        res.insert(k, (v.len(), avg));
+    }
+    Ok(res)
+}
+
+ pub fn pretty_print_average_areas(report: HashMap<String, (usize, usize)>) -> String {
+    let mut res = "".to_string();
+    for (area, (count,avg)) in report {
+        let hours = avg / 60;
+        let minutes = avg % 60;
+        res = format!("{res}\n{area}: ({count}) {hours}h {minutes}m");
+    }
+    res
+}
