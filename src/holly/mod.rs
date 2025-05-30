@@ -81,29 +81,30 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                             crate::generate_report(church_client).await?
                         };
 
-                        let contacts = crate::get_average(church_client).await?;
-                        let mut contacts = contacts.into_iter().collect::<Vec<(String, usize)>>();
-                        contacts.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-
-                        let mut avg_report = "".to_string();
-                        for (k, v) in contacts {
-                            if let Some(bl) = &holly_config.blacklist {
-                                if bl.contains(&k) {
-                                    continue;
-                                }
-                            }
-                            let hours = v / 60;
-                            let minutes = v % 60;
-                            avg_report = format!("{avg_report}\n{k}: {hours}h {minutes}m");
-                        }
+                        
                         for (zone_id, chat_id) in &holly_config.zone_chats {
-                            let average_areas_report = crate::get_area_average_in_zone(church_client, *zone_id).await?;
-                            let avg_reporting = crate::pretty_print_average_areas(average_areas_report);
+                            let zone_name = report.get_zone_name_from_id(zone_id);
+                            let contacts = crate::get_average(church_client, zone_name).await?;
+                            let mut contacts = contacts.into_iter().collect::<Vec<(String, (usize, usize))>>();
+                            contacts.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+
+                            let mut avg_report = "".to_string();
+                            for (k, (c, a)) in contacts {
+                                if let Some(bl) = &holly_config.blacklist {
+                                    if bl.contains(&k) {
+                                        continue;
+                                    }
+                                }
+                                let hours = a / 60;
+                                let minutes = a % 60;
+                                avg_report = format!("{avg_report}\n{k}: ({c}) {hours}h {minutes}m");
+                            }
+
                             let msg = if let Some(p) = report.get_pretty_zone_uncontacted_count(zone_id) {                                
-                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_reporting}\n\nThere are this many referrals. Please continue to be creative and persistent in your contacting!\n\n{p}")
+                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_report}\n\nThere are this many referrals. Please continue to be creative and persistent in your contacting!\n\n{p}")
                             } else {
                                 info!("No uncontacted referrals in {zone_id}");
-                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_reporting}\n\nNo uncontacted referrals! GREAT work!")
+                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_report}\n\nNo uncontacted referrals! GREAT work!")
                             };
                             info!("Sending {msg} to {chat_id}");
                             stream.write_all(&Message { content: msg, chat_id: chat_id.to_string(), ..Default::default() }.to_bytes()).await?;
