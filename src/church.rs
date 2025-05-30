@@ -324,7 +324,6 @@ impl ChurchClient {
         &mut self,
         person: &persons::Person,
     ) -> anyhow::Result<Vec<persons::TimelineEvent>> {
-        info!("Getting timeline for {}", person.guid);
         let mut tries = 0;
 
         while tries < MAX_RETRIES {
