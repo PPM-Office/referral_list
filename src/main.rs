@@ -83,16 +83,9 @@ async fn parse_argument(arg: &str, church_client: &mut ChurchClient) -> anyhow::
             Ok(true)
         }
         "average" => {
-            let contacts = reports::get_average(church_client, None, false).await?;
-            let mut contacts = contacts.into_iter().collect::<Vec<(String, (usize, usize))>>();
-            contacts.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+            // let contacts = reports::get_average(church_client, None, false).await?;
 
-            let avg_report = "".to_string();
-            for (k, (c, a)) in contacts {
-                let hours = a / 60;
-                let minutes = a % 60;
-                println!("{avg_report}{k}: ({c}) {hours}h {minutes}m");
-            }
+            // let output = pretty_print_average_areas(contacts.data);
             Ok(true)
         }
         "zone_report" => {
