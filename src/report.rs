@@ -121,7 +121,5 @@ impl Report {
             Ok(None)
         }
     }
-    pub fn get_zone_name_from_id(&self, zone_id: &usize) -> Option<String> {
-        self.zones.get(zone_id).cloned()
-    }
+
 }

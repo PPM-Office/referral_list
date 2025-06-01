@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::{NaiveDateTime, NaiveTime, Duration};
+use chrono::{Duration, Local, NaiveDateTime, NaiveTime, Utc};
 use log::{info, warn};
 use reqwest::{redirect::Policy, Client};
 use reqwest_cookie_store::CookieStoreMutex;
@@ -375,6 +375,12 @@ impl ChurchClient {
         Ok(None)
     }
 
+    fn utc_naive_to_local_time(naive_utc: NaiveDateTime) -> NaiveDateTime {
+        let utc_dt = chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive_utc, Utc);
+        let local_dt = utc_dt.with_timezone(&Local);
+        local_dt.naive_local()
+    }
+
     pub async fn get_person_contact_time(
         &mut self,
         person: &persons::Person,
@@ -401,8 +407,11 @@ impl ChurchClient {
         }
         if let Some(referral_sent) = referral_sent {
             if let Some(last_contact) = last_contact {
+                let referral_sent = Self::utc_naive_to_local_time(referral_sent);
+                let last_contact = Self::utc_naive_to_local_time(last_contact);
+
                 let referral_time = referral_sent.time();
-                let start_of_day = NaiveTime::from_hms_opt(6, 30, 0).unwrap();
+                let start_of_day = NaiveTime::from_hms_opt(6, 45, 0).unwrap();
                 let end_of_day = NaiveTime::from_hms_opt(22, 15, 0).unwrap();
                 let adjusted_referral_sent = if referral_time < start_of_day {
                     referral_sent.date().and_time(start_of_day)

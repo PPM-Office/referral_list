@@ -15,12 +15,14 @@ mod env;
 mod holly;
 mod persons;
 mod report;
+mod reports;
 
-const CLI_OPTIONS: [&str; 6] = ["report", "generate", "average", "holly", "settings", "exit"];
-const CLI_DESCRIPTONS: [&str; 6] = [
+const CLI_OPTIONS: [&str; 7] = ["report", "generate", "average", "zone_report", "holly", "settings", "exit"];
+const CLI_DESCRIPTONS: [&str; 7] = [
     "Reads today's report of uncontacted referrals or fetches a new one",
     "Generates a new list of uncontacted referrals, regardless of the cache.",
     "Gets the average contact time in minutes between zones",
+    "Generates zone average",
     "Connects to Holly and responds to messages",
     "Change the settings for Holly",
     "Exits the program",
@@ -81,7 +83,7 @@ async fn parse_argument(arg: &str, church_client: &mut ChurchClient) -> anyhow::
             Ok(true)
         }
         "average" => {
-            let contacts = get_average(church_client, None).await?;
+            let contacts = reports::get_average(church_client, None, false).await?;
             let mut contacts = contacts.into_iter().collect::<Vec<(String, (usize, usize))>>();
             contacts.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
@@ -91,6 +93,16 @@ async fn parse_argument(arg: &str, church_client: &mut ChurchClient) -> anyhow::
                 let minutes = a % 60;
                 println!("{avg_report}{k}: ({c}) {hours}h {minutes}m");
             }
+            Ok(true)
+        }
+        "zone_report" => {
+            let env = church_client.env.clone();
+            let holly_config = church_client.holly_config.clone().unwrap();
+
+            let report = reports::zone_report_daily::ZoneReportDailyMap::generate_report(church_client, holly_config).await?;
+            let output = report.pretty_print_report(&env).await;
+            report.save(&env)?;
+            println!("{output}");
             Ok(true)
         }
         "holly" => {
@@ -152,103 +164,7 @@ pub async fn generate_report(church_client: &mut ChurchClient) -> anyhow::Result
     Ok(report)
 }
 
-pub async fn get_average(
-    church_client: &mut ChurchClient,
-    requested_zone: Option<String>
-) -> anyhow::Result<HashMap<String, (usize, usize)>> {
-    let mut contacts = church_client.env.load_contacts()?;
-
-    let persons_list = church_client.get_cached_people_list().await?.to_vec();
-    let now = Utc::now().naive_utc();
-    let persons_list: Vec<persons::Person> = persons_list
-        .into_iter()
-        .filter(|x| {
-            x.referral_status != persons::ReferralStatus::NotAttempted
-                && (x.person_status < persons::PersonStatus::NewMember)
-                && now.signed_duration_since(x.assigned_date) < Duration::hours(24)
-        })
-        .collect();
-
-    let mut zones = HashMap::new();
-    let bar = ProgressBar::new(persons_list.len() as u64);
-    for person in persons_list {
-        if let Some(zone_name) = &person.zone_name {
-            bar.inc(1);
-           let t = match contacts.get(&person.guid).cloned() {
-                Some(t) if t > 60 * 24 => {
-                    // probably have a duplicate referral. Recalculate contact time
-                    if let Some(recalculated_contact_time) = church_client.get_person_contact_time(&person).await? {
-                        contacts.insert(person.guid, recalculated_contact_time);
-                        debug!("Recalculated contact time for {}: {}", person.first_name, recalculated_contact_time);
-                        recalculated_contact_time
-                    } else {
-                        debug!("No contact time found for {}. Skipping.", person.first_name);
-                        continue;
-                    }
-                }
-                Some(t) => t,
-                None => {
-                    if let Some(t) = church_client.get_person_contact_time(&person).await? {
-                        contacts.insert(person.guid, t);
-                        t
-                    } else {
-                        continue;
-                    }
-                }
-            };
-
-            let zone = match zones.get_mut(zone_name) {
-                Some(z) => z,
-                None => {
-                    zones.insert(zone_name.clone(), HashMap::new());
-                    zones.get_mut(zone_name).unwrap()
-                }
-            };
-            if let Some(area_name) = &person.area_name {
-                let area = match zone.get_mut(area_name) {
-                    Some(n) => n,
-                    None => {
-                        zone.insert(area_name.clone(), (0 as usize, 0 as usize));
-                        zone.get_mut(area_name).unwrap()
-                    }
-                };
-                if area_name == &String::from("Dover/Camden") {
-                    debug!("{} {}", person.first_name, t);
-                }
-                area.0 += 1;
-                area.1 += t;
-            }
-        }    
-    }
-
-    church_client.env.save_contacts(&contacts)?;
-    let mut res: HashMap<String, (usize, usize)> = HashMap::new();
-
-    match requested_zone {
-        Some(ref zone_name) => {
-            if let Some(area_stats) = zones.get(zone_name) {
-                for (area, (count, total_time)) in area_stats {
-                    res.insert(area.clone(), (*count, total_time / count));
-                }
-            }
-        },
-        None => {
-            for (zone_name, area_stats) in &zones {
-                let (mut count, mut total) = (0, 0);
-                for (_area_name, (c, t)) in area_stats {
-                    count += c;
-                    total += t;
-                }
-                res.insert(zone_name.clone(), (count, total / count));
-            }
-        }
-    }
-
-    Ok(res)
-}
-
-
- pub fn pretty_print_average_areas(data: HashMap<String, (usize, usize)>) -> String {
+pub fn pretty_print_average_areas(data: HashMap<String, (usize, usize)>) -> String {
     let mut res = "".to_string();
     for (area, (count,avg)) in data {
         let hours = avg / 60;

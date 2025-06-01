@@ -1,17 +1,19 @@
 // Jackson Coxson
 
 use log::{error, info};
+use scheduled_times::SendTimeStore;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt},
     sync::mpsc::UnboundedSender,
     time::sleep_until,
 };
 
-use crate::church::ChurchClient;
+use crate::{church::ChurchClient, reports};
 
 pub mod config;
-mod send_time;
+mod scheduled_times;
+pub mod send_message;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Message {
@@ -72,50 +74,23 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                 _ = sleep_until(next_time_check) => {
                     info!("Checking if it's time to send Holly's list");
                     next_time_check = tokio::time::Instant::now() + tokio::time::Duration::from_secs(20);
-                    let mut st = send_time::SendTime::load(&church_client.env).await?;
-                    if st.is_go_time().await? {
-                        info!("Sending Holly's list!");
-                        let report = if let Some(report) = crate::report::Report::read_report(&church_client.env)? {
-                            report
-                        } else {
-                            crate::generate_report(church_client).await?
-                        };
+                    let mut schedules = SendTimeStore::load(&church_client.env).await?;
 
-                        
-                        for (zone_id, chat_id) in &holly_config.zone_chats {
-                            let zone_name = report.get_zone_name_from_id(zone_id);
-                            let contacts = crate::get_average(church_client, zone_name).await?;
-                            let mut contacts = contacts.into_iter().collect::<Vec<(String, (usize, usize))>>();
-                            contacts.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-
-                            let mut avg_report = "".to_string();
-                            for (k, (c, a)) in contacts {
-                                if let Some(bl) = &holly_config.blacklist {
-                                    if bl.contains(&k) {
-                                        continue;
-                                    }
-                                }
-                                let hours = a / 60;
-                                let minutes = a % 60;
-                                avg_report = format!("{avg_report}\n{k}: ({c}) {hours}h {minutes}m");
+                    for (name, entry) in schedules.iter_mut() {
+                        if entry.is_go_time() {
+                            match name.as_str() {
+                                "zone_daily" => 
+                                    reports::zone_report_daily::ZoneReportDailyMap::send_report_to_holly(
+                                        church_client, 
+                                        holly_config.clone()
+                                    ).await?,
+                                // "zone_nightly" => {},
+                                // "all_mission_weekly" => {},
+                                _ => ()
                             }
-
-                            let msg = if let Some(p) = report.get_pretty_zone_uncontacted_count(zone_id) {                                
-                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_report}\n\nThere are this many referrals. Please continue to be creative and persistent in your contacting!\n\n{p}")
-                            } else {
-                                info!("No uncontacted referrals in {zone_id}");
-                                format!("Good morning Zone!! The Lord has big plans for today - let's get started!\n\nAverage contact time over the past 24 hours:\n{avg_report}\n\nNo uncontacted referrals! GREAT work!")
-                            };
-                            info!("Sending {msg} to {chat_id}");
-                            stream.write_all(&Message { content: msg, chat_id: chat_id.to_string(), ..Default::default() }.to_bytes()).await?;
                         }
-                        if let Some(chat_id) = &holly_config.unassigned_chat {
-                            let msg = report.unassigned.join("\n");
-                            info!("Sending {msg} to {chat_id}");
-                            stream.write_all(&Message { content: msg, chat_id: chat_id.to_string(), ..Default::default() }.to_bytes()).await?;
-                        }
-
                     }
+                    SendTimeStore::save(&church_client.env, &schedules).await?;
                 }
                 _ = rx.recv() => {
                     info!("Disconnecting from Holly...");
