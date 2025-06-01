@@ -1,8 +1,9 @@
 use std::{collections::HashMap};
-use crate::{church::ChurchClient, holly::{self}, reports::{get_average, load_reports, save_report}};
+use crate::{church::ChurchClient, holly::{self, send_message::{self, send_message}}, reports::{get_average, load_reports, save_report}};
 
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
+use tokio::net::TcpStream;
 
 use super::{get_templates, get_unattempted, get_zone_name_from_id};
 
@@ -67,7 +68,7 @@ impl ZoneReportDailyMap {
         save_report(env, "zone_report_daily.json", self)
     }
 
-    pub async fn send_report_to_holly(church_client: &mut ChurchClient, holly_config: holly::config::Config) -> anyhow::Result<()> {
+    pub async fn send_report_to_holly(stream: &mut TcpStream, church_client: &mut ChurchClient, holly_config: holly::config::Config) -> anyhow::Result<()> {
         info!("Sending daily zone report to Holly...");
         let report = Self::generate_report(church_client, holly_config.clone()).await?;
         let templates = get_templates(&church_client.env).await.unwrap();
@@ -80,6 +81,7 @@ impl ZoneReportDailyMap {
                 .replace("{area_unattempted_count}", &vars.get("area_unattempted_count").unwrap_or(&"".to_string()));
 
             debug!("chat_id: {chat_id}, message: {message}");
+            send_message(stream, message, chat_id.clone()).await?;
         }   
         Ok(())
     }

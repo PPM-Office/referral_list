@@ -81,6 +81,7 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                             match name.as_str() {
                                 "zone_daily" => 
                                     reports::zone_report_daily::ZoneReportDailyMap::send_report_to_holly(
+                                        &mut stream,
                                         church_client, 
                                         holly_config.clone()
                                     ).await?,
