@@ -1,7 +1,9 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use chrono::{Duration, Utc};
+use indicatif::ProgressBar;
 use serde::{de::DeserializeOwned, Serialize};
+use zone_report_daily::{AreaAverageResponseTime, AreaUnattemptedCount};
 
 use crate::{church::ChurchClient, persons};
 
@@ -81,7 +83,7 @@ pub async fn get_average(
     church_client: &mut ChurchClient,
     requested_zone: Option<String>,
     require_refetch: bool
-) -> anyhow::Result<HashMap<String, (usize, usize)>> {
+) -> anyhow::Result<AreaAverageResponseTime> {
     let mut contacts = church_client.env.load_contacts()?;
 
     let persons_list = church_client.get_cached_people_list().await?.to_vec();
@@ -96,12 +98,12 @@ pub async fn get_average(
         .collect();
 
     let mut zones = HashMap::new();
-    // let bar = ProgressBar::new(persons_list.len() as u64);
+    let bar = ProgressBar::new(persons_list.len() as u64);
     for person in persons_list {
         if let Some(zone_name) = &person.zone_name {
-            // bar.inc(1);
+            bar.inc(1);
            
-            let t: usize = if require_refetch {
+            let t: usize = if require_refetch && requested_zone.as_ref() == Some(zone_name) {
                 // Always fetch and update cache
                 if let Some(contact_time) = church_client.get_person_contact_time(&person).await? {
                     contacts.insert(person.guid.clone(), contact_time);
@@ -136,47 +138,49 @@ pub async fn get_average(
                 let area = match zone.get_mut(area_name) {
                     Some(n) => n,
                     None => {
-                        zone.insert(area_name.clone(), (0 as usize, 0 as usize));
+                        zone.insert(area_name.clone(), (Vec::new(), 0 as usize));
                         zone.get_mut(area_name).unwrap()
                     }
                 };
              
-                area.0 += 1;
+                area.0.push((person.guid.clone(), person.first_name.clone()));
                 area.1 += t;
             }
         }    
     }
 
     church_client.env.save_contacts(&contacts)?;
-    let mut res: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut res: AreaAverageResponseTime = HashMap::new();
 
     match requested_zone {
         Some(ref zone_name) => {
             if let Some(area_stats) = zones.get(zone_name) {
-                for (area, (count, total_time)) in area_stats {
-                    res.insert(area.clone(), (*count, total_time / count));
+                for (area, (people, total_time)) in area_stats {
+                    let count = people.len();
+                    res.insert(area.clone(), (people.to_vec(), total_time / count));
                 }
             }
         },
         None => {
             for (zone_name, area_stats) in &zones {
-                let (mut count, mut total) = (0, 0);
-                for (_area_name, (c, t)) in area_stats {
-                    count += c;
+                let (mut people, mut total) = (Vec::new(), 0);
+                for (_area_name, (p, t)) in area_stats {
+                    people.extend(p.iter().cloned());
                     total += t;
                 }
-                res.insert(zone_name.clone(), (count, total / count));
+                let count = people.len();
+                res.insert(zone_name.clone(), (people, total / count));
             }
         }
     }
-
+    bar.finish();
     Ok(res)
 }
 
 pub async fn get_unattempted(
     church_client: &mut ChurchClient,
     requested_zone: Option<String>,
-) -> anyhow::Result<HashMap<String, usize>> {
+) -> anyhow::Result<AreaUnattemptedCount> {
     let persons_list = church_client.get_cached_people_list().await?.to_vec();
     let now = Utc::now().naive_utc();
     let persons_list: Vec<persons::Person> = persons_list
@@ -188,7 +192,7 @@ pub async fn get_unattempted(
         })
         .collect();
     
-    let mut zones: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    let mut zones: HashMap<String, HashMap<String, Vec<(String, String)>>> = HashMap::new();
 
     for person in persons_list {
         if let Some(zone_name) = &person.zone_name {
@@ -203,32 +207,32 @@ pub async fn get_unattempted(
                 let area = match zone.get_mut(area_name) {
                     Some(n) => n,
                     None => {
-                        zone.insert(area_name.clone(), 0);
+                        zone.insert(area_name.clone(), Vec::new());
                         zone.get_mut(area_name).unwrap()
                     }
                 };
              
-                *area += 1;
+                area.push((person.guid.clone(), person.first_name.clone()));
             }
         }
     }
-    let mut res: HashMap<String, usize> = HashMap::new();
+    let mut res: AreaUnattemptedCount = HashMap::new();
 
     match requested_zone {
         Some(ref zone_name) => {
             if let Some(area_stats) = zones.get(zone_name) {
-                for (area, count) in area_stats {
-                    res.insert(area.clone(), count.clone());
+                for (area, people) in area_stats {
+                    res.insert(area.clone(), people.to_vec());
                 }
             }
         },
         None => {
             for (zone_name, area_stats) in &zones {
-                let mut count = 0;
-                for (_area_name, c) in area_stats {
-                    count += c;
+                let mut people = Vec::new();
+                for (_area_name, p) in area_stats {
+                    people.extend(p.iter().cloned());
                 }
-                res.insert(zone_name.clone(), count);
+                res.insert(zone_name.clone(), people);
             }
         }
     }      

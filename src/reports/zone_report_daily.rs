@@ -7,10 +7,13 @@ use tokio::net::TcpStream;
 
 use super::{get_templates, get_unattempted, get_zone_name_from_id};
 
+pub type AreaAverageResponseTime = HashMap<String, (Vec<(String, String)>, usize)>;
+pub type AreaUnattemptedCount = HashMap<String, Vec<(String, String)>>;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ZoneReportDaily {
-    pub area_avg_response_time: HashMap<String, (usize, usize)>,
-    pub area_unattempted_count: HashMap<String, usize>,
+    pub area_avg_response_time: AreaAverageResponseTime,
+    pub area_unattempted_count: AreaUnattemptedCount,
 }
 
 impl ZoneReportDaily {
@@ -19,13 +22,21 @@ impl ZoneReportDaily {
         let mut area_avg_response_time = String::new();
         let mut area_unattempted_count = String::new();
 
-        for (area_name, (count, average)) in &self.area_avg_response_time {
+        let mut avg_entries: Vec<_> = self.area_avg_response_time.iter().collect();
+        avg_entries.sort_by_key(|(area_name, _)| *area_name);
+
+        for (area_name, (people, average)) in avg_entries {
             let hours = average / 60;
             let minutes = average % 60;
-            area_avg_response_time.push_str(&format!("{area_name}:\nReceived: {count}, Avg: {hours}h {minutes}m\n"));
+            let count = people.len();
+            area_avg_response_time.push_str(&format!("{area_name}:\nReceived: {count}, Avg: {hours}h {minutes}m\n\n"));
         }
 
-        for (area_name, count) in &self.area_unattempted_count {
+        let mut unattempted_entries: Vec<_> = self.area_unattempted_count.iter().collect();
+        unattempted_entries.sort_by_key(|(area_name, _)| *area_name);
+
+        for (area_name, people) in unattempted_entries {
+            let count = people.len();
             area_unattempted_count.push_str(&format!("{area_name}: {count}\n"));
         }
 
@@ -49,7 +60,7 @@ impl ZoneReportDailyMap {
 
         for (zone_id, _) in holly_config.zone_chats {
             let zone_name = get_zone_name_from_id(&church_client.env, zone_id);
-            let area_avg_response_time = get_average(church_client, zone_name.clone(), false).await?;
+            let area_avg_response_time = get_average(church_client, zone_name.clone(), true).await?;
             let area_unattempted_count = get_unattempted(church_client, zone_name.clone()).await?;
 
             new_map.insert(zone_id, ZoneReportDaily {
