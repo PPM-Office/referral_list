@@ -410,23 +410,41 @@ impl ChurchClient {
                 let referral_sent = Self::utc_naive_to_local_time(referral_sent);
                 let last_contact = Self::utc_naive_to_local_time(last_contact);
 
-                let referral_time = referral_sent.time();
                 let start_of_day = NaiveTime::from_hms_opt(6, 45, 0).unwrap();
                 let end_of_day = NaiveTime::from_hms_opt(22, 15, 0).unwrap();
-                let adjusted_referral_sent = if referral_time < start_of_day {
-                    referral_sent.date().and_time(start_of_day)
-                } else if referral_time > end_of_day {
-                    (referral_sent.date() + Duration::days(1)).and_time(start_of_day)
+
+                let mut total_minutes = 0;
+
+                // If referral_sent and last_contact are on the same day
+                if referral_sent.date() == last_contact.date() {
+                    let from = referral_sent.time().max(start_of_day);
+                    let to = last_contact.time().min(end_of_day);
+                    if to > from {
+                        total_minutes = (to - from).num_minutes() as usize;
+                    }
                 } else {
-                    referral_sent
-                };
-                if last_contact > adjusted_referral_sent {
-                    let duration = last_contact.signed_duration_since(adjusted_referral_sent);
-                    return Ok(Some(duration.num_minutes() as usize));
-                } else {
-                    info!("Last contact is before adjusted referral sent time.");
-                    return Ok(Some(0)); // Return 0 if last_contact is before adjusted_referral_sent
+                    // Minutes from referral_sent to end_of_day
+                    let from = referral_sent.time().max(start_of_day);
+                    let to = end_of_day;
+                    if to > from {
+                        total_minutes += (to - from).num_minutes() as usize;
+                    }
+
+                    // Minutes from start_of_day to last_contact on the last day
+                    let from = start_of_day;
+                    let to = last_contact.time().min(end_of_day);
+                    if to > from {
+                        total_minutes += (to - from).num_minutes() as usize;
+                    }
+
+                    // Add full days in between, if any
+                    let days_between = (last_contact.date() - referral_sent.date()).num_days() - 1;
+                    if days_between > 0 {
+                        total_minutes += days_between as usize * (end_of_day - start_of_day).num_minutes() as usize;
+                    }
                 }
+
+                return Ok(Some(total_minutes));
             }
         }
         Ok(None)
