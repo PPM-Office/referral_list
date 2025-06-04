@@ -6,8 +6,8 @@ use chrono::{Duration, Utc};
 use church::ChurchClient;
 use dialoguer::{theme::ColorfulTheme, Select};
 use indicatif::ProgressBar;
-use log::info;
 use log::debug;
+use log::info;
 
 mod bearer;
 mod church;
@@ -17,7 +17,15 @@ mod persons;
 mod report;
 mod reports;
 
-const CLI_OPTIONS: [&str; 7] = ["report", "generate", "average", "zone_report", "holly", "settings", "exit"];
+const CLI_OPTIONS: [&str; 7] = [
+    "report",
+    "generate",
+    "average",
+    "zone_report",
+    "holly",
+    "settings",
+    "exit",
+];
 const CLI_DESCRIPTONS: [&str; 7] = [
     "Reads today's report of uncontacted referrals or fetches a new one",
     "Generates a new list of uncontacted referrals, regardless of the cache.",
@@ -83,16 +91,30 @@ async fn parse_argument(arg: &str, church_client: &mut ChurchClient) -> anyhow::
             Ok(true)
         }
         "average" => {
-            // let contacts = reports::get_average(church_client, None, false).await?;
+            let env = church_client.env.clone();
+            let holly_config = church_client.holly_config.clone().unwrap();
 
-            // let output = pretty_print_average_areas(contacts.data);
+            let report =
+                reports::all_mission_report_weekly::AllMissionReportWeekly::generate_report(
+                    church_client,
+                    holly_config,
+                )
+                .await?;
+
+            let output = report.pretty_print_report(&env).await;
+            report.save(&env)?;
+            println!("{output}");
             Ok(true)
         }
         "zone_report" => {
             let env = church_client.env.clone();
             let holly_config = church_client.holly_config.clone().unwrap();
 
-            let report = reports::zone_report_daily::ZoneReportDailyMap::generate_report(church_client, holly_config).await?;
+            let report = reports::zone_report_daily::ZoneReportDailyMap::generate_report(
+                church_client,
+                holly_config,
+            )
+            .await?;
             let output = report.pretty_print_report(&env).await;
             report.save(&env)?;
             println!("{output}");
@@ -136,7 +158,7 @@ pub async fn generate_report(church_client: &mut ChurchClient) -> anyhow::Result
             (x.referral_status != persons::ReferralStatus::Successful
                 && x.person_status < persons::PersonStatus::NewMember
                 && now.signed_duration_since(x.assigned_date) > Duration::hours(48))
-            || x.referral_status == persons::ReferralStatus::NotAttempted
+                || x.referral_status == persons::ReferralStatus::NotAttempted
         })
         .collect();
     info!("{} uncontacted referrals", persons_list.len());
@@ -159,7 +181,7 @@ pub async fn generate_report(church_client: &mut ChurchClient) -> anyhow::Result
 
 pub fn pretty_print_average_areas(data: HashMap<String, (usize, usize)>) -> String {
     let mut res = "".to_string();
-    for (area, (count,avg)) in data {
+    for (area, (count, avg)) in data {
         let hours = avg / 60;
         let minutes = avg % 60;
         res = format!("{res}\n{area}: ({count}) {hours}h {minutes}m");
