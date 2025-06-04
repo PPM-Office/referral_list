@@ -418,7 +418,7 @@ impl ChurchClient {
                 let referral_sent = Self::utc_naive_to_local_time(referral_sent);
                 let last_contact = Self::utc_naive_to_local_time(last_contact);
 
-                let start_of_day = NaiveTime::from_hms_opt(6, 45, 0).unwrap();
+                let start_of_day = NaiveTime::from_hms_opt(10, 00, 0).unwrap();
                 let end_of_day = NaiveTime::from_hms_opt(22, 15, 0).unwrap();
 
                 let mut total_minutes = 0;
