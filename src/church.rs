@@ -293,6 +293,7 @@ impl ChurchClient {
                         if let Some(file_name) = file_name.split_once('.') {
                             if let Ok(timestamp) = file_name.0.parse::<u64>() {
                                 if let Some(diff) = now.checked_sub(timestamp) {
+                                    // TODO: Make this a configurable value
                                     if diff < 60 * 60 {
                                         info!("Cache hit");
                                         return Ok(persons::Person::parse_lossy(
@@ -405,6 +406,13 @@ impl ChurchClient {
                 }
             }
         }
+        Ok(Self::get_adjusted_contact_time(referral_sent, last_contact))
+    }
+
+    fn get_adjusted_contact_time(
+        referral_sent: Option<NaiveDateTime>,
+        last_contact: Option<NaiveDateTime>,
+    ) -> Option<usize> {
         if let Some(referral_sent) = referral_sent {
             if let Some(last_contact) = last_contact {
                 let referral_sent = Self::utc_naive_to_local_time(referral_sent);
@@ -440,14 +448,15 @@ impl ChurchClient {
                     // Add full days in between, if any
                     let days_between = (last_contact.date() - referral_sent.date()).num_days() - 1;
                     if days_between > 0 {
-                        total_minutes += days_between as usize * (end_of_day - start_of_day).num_minutes() as usize;
+                        total_minutes += days_between as usize
+                            * (end_of_day - start_of_day).num_minutes() as usize;
                     }
                 }
 
-                return Ok(Some(total_minutes));
+                return Some(total_minutes);
             }
         }
-        Ok(None)
+        None
     }
 }
 
