@@ -82,6 +82,8 @@ impl ZoneReportDailyMap {
     pub async fn send_report_to_holly(stream: &mut TcpStream, church_client: &mut ChurchClient, holly_config: holly::config::Config) -> anyhow::Result<()> {
         info!("Sending daily zone report to Holly...");
         let report = Self::generate_report(church_client, holly_config.clone()).await?;
+        report.save(&church_client.env)?;
+        
         let templates = get_templates(&church_client.env).await.unwrap();
         let template = templates.get("zone_report_daily").ok_or_else(|| anyhow::anyhow!("Template 'zone_report_daily' not found"))?;
         for (zone_id, zone_report) in report.0.iter() {
