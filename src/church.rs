@@ -391,19 +391,19 @@ impl ChurchClient {
         let area_id_oath = PathBuf::from_str(&self.env.working_path)?.join("area_ids.json");
 
         let mut zone_ids = HashSet::new();
-        let mut zones = Vec::new();
+        let mut zones = HashMap::new();
         let mut area_ids = HashSet::new();
-        let mut areas = Vec::new();
+        let mut areas = HashMap::new();
 
         for person in people_list {
             if let (Some(zone_name), Some(zone_id)) = (person.zone_name, person.zone_id) {
                 if zone_ids.insert(zone_id) {
-                    zones.push((zone_id, zone_name));
+                    zones.insert(zone_id, zone_name);
                 }
             }
             if let (Some(area_name), Some(area_id)) = (person.area_name, person.area_id) {
                 if area_ids.insert(area_id) {
-                    areas.push((area_id, area_name));
+                    areas.insert(area_id, area_name);
                 }
             }
         }
