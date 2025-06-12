@@ -1,12 +1,5 @@
 // Jackson Coxson
-
-use std::{
-    collections::HashMap,
-    io::{BufRead, Write},
-    path::PathBuf,
-    str::FromStr,
-};
-
+use std::io::Write;
 use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
 use log::error;
 
@@ -29,13 +22,13 @@ pub fn check_vars() -> Env {
 
     Env {
         church_username: std::env::var("CHURCH_USERNAME").unwrap_or_else(|_| {
-            let password: String = Input::with_theme(&ColorfulTheme::default())
+            let username: String = Input::with_theme(&ColorfulTheme::default())
                 .with_prompt("Enter your churchofjesuschrist.org username")
                 .interact()
                 .unwrap();
 
-            save_var("CHURCH_USERNAME", &password);
-            password
+            save_var("CHURCH_USERNAME", &username);
+            username
         }),
         church_password: std::env::var("CHURCH_PASSWORD").unwrap_or_else(|_| {
             let password: String = Password::with_theme(&ColorfulTheme::default())
@@ -52,13 +45,13 @@ pub fn check_vars() -> Env {
                 error!("Creating directory {here:?} failed!");
             }
             let here = here.to_string_lossy();
-            let password: String = Input::with_theme(&ColorfulTheme::default())
+            let path: String = Input::with_theme(&ColorfulTheme::default())
                 .with_prompt("Path to cache data fetched and processed from church servers. If unsure, just press enter for the default value.")
                 .default(here.to_string())
                 .interact_text()
                 .unwrap();
-            save_var("WORKING_PATH", &password);
-            password
+            save_var("WORKING_PATH", &path);
+            path
         }),
     }
 }
@@ -83,53 +76,5 @@ fn save_var(key: &str, val: &str) {
             .unwrap();
 
         file.write_all(format!("{key}={val}\n").as_bytes()).unwrap();
-    }
-}
-
-impl Env {
-    pub fn load_contacts(&self) -> anyhow::Result<HashMap<String, usize>> {
-        // Load or create the CSV file
-        let csv_path = PathBuf::from_str(&self.working_path)?.join("contact_times.csv");
-        if !std::fs::exists(&csv_path)? {
-            return Ok(HashMap::new());
-        }
-
-        let mut res = HashMap::new();
-
-        let file = std::fs::File::open(&csv_path)?;
-        let reader = std::io::BufReader::new(file);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    let mut line = line.split(',');
-                    if let Some(guid) = line.next() {
-                        if let Some(time) = line.next() {
-                            if let Ok(time) = time.parse::<usize>() {
-                                res.insert(guid.to_string(), time);
-                            }
-                        }
-                    }
-                }
-                Err(e) => return Err(anyhow::anyhow!(e)),
-            }
-        }
-
-        Ok(res)
-    }
-
-    pub fn save_contacts(&self, contacts: &HashMap<String, usize>) -> anyhow::Result<()> {
-        // Load or create the CSV file
-        let csv_path = PathBuf::from_str(&self.working_path)?.join("contact_times.csv");
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&csv_path)?;
-
-        let mut writer = std::io::BufWriter::new(file);
-        for (k, v) in contacts {
-            writeln!(&mut writer, "{k},{v}")?;
-        }
-        Ok(())
     }
 }

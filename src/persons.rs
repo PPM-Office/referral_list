@@ -1,10 +1,13 @@
 // Jackson Coxson
 
+use crate::{cache::PersonsCacheMap, church::ChurchClient, holly::scheduled_times::RefetchPolicy};
 use chrono::naive::serde::ts_milliseconds;
 use chrono::NaiveDateTime;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+
+use crate::cache;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Persons {
@@ -40,9 +43,42 @@ pub struct Person {
     #[serde(rename = "areaName")]
     pub area_name: Option<String>,
 
+    #[serde(rename = "areaId")]
+    pub area_id: Option<usize>,
+
     #[serde(rename = "referralAssignedDate")]
     #[serde(with = "ts_milliseconds")]
     pub assigned_date: NaiveDateTime,
+
+    // #[serde(with = "ts_milliseconds")]
+    #[serde(rename = "baptismGoalDate")]
+    pub baptism_goal_date: Option<NaiveDateTime>,
+
+    // #[serde(with = "ts_milliseconds")]
+    #[serde(rename = "baptismDate")]
+    pub baptism_date: Option<NaiveDateTime>,
+
+    // #[serde(with = "ts_milliseconds")]
+    #[serde(rename = "lastSacramentDate")]
+    pub last_sacrament_attendance: Option<NaiveDateTime>,
+
+    pub response_time: Option<usize>,
+
+    pub has_attended_sacrament: Option<bool>,
+
+    pub has_attended_since_last_referral: Option<bool>,
+
+    pub sacrament_attendence_count: Option<usize>,
+
+    pub has_been_taught: Option<bool>,
+
+    pub has_been_taught_in_person: Option<bool>,
+
+    pub has_been_taught_since_last_referral: Option<bool>,
+
+    pub referral_count: Option<usize>,
+
+    pub last_timeline_assessment: Option<NaiveDateTime>,
 }
 
 impl Person {
@@ -61,6 +97,34 @@ impl Person {
             Vec::new()
         }
     }
+
+    pub async fn apply_cache(
+        &mut self,
+        church_client: &mut ChurchClient,
+        cache_map: &mut PersonsCacheMap,
+        refetch_policy: RefetchPolicy,
+    ) -> &mut Self {
+        if let Ok(Some(cache)) = cache::PersonCache::get_cached_data_for_person(
+            church_client,
+            &self.clone(),
+            cache_map,
+            refetch_policy,
+        )
+        .await
+        {
+            self.response_time = cache.response_time;
+            self.has_attended_sacrament = Some(cache.has_attended_sacrament);
+            self.has_attended_since_last_referral = Some(cache.has_attended_since_last_referral);
+            self.sacrament_attendence_count = Some(cache.sacrament_attendance_count);
+            self.has_been_taught = Some(cache.has_been_taught);
+            self.has_been_taught_in_person = Some(cache.has_been_taught_in_person);
+            self.has_been_taught_since_last_referral =
+                Some(cache.has_been_taught_since_last_referral);
+            self.referral_count = cache.referral_count;
+            self.last_timeline_assessment = Some(cache.last_timeline_assessment);
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +135,9 @@ pub struct TimelineEvent {
     #[serde(rename = "itemDate")]
     #[serde(with = "ts_milliseconds")]
     pub item_date: NaiveDateTime,
+
+    #[serde(rename = "contactTypeCode")]
+    pub contact_type: Option<TimelineContactType>,
 
     #[serde(rename = "eventStatus")]
     pub status: Option<bool>,
@@ -120,6 +187,22 @@ pub enum PersonStatus {
     OutsideAreaStrength = 28,
     Member = 40,
     Moved = 201,
+}
+
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub enum TimelineContactType {
+    #[serde(rename = "PERSON")]
+    InPerson,
+    #[serde(rename = "PHONE")]
+    Phone,
+    #[serde(rename = "TEXT")]
+    Text,
+    #[serde(rename = "WHATSAPP")]
+    WhatsApp,
+    #[serde(rename = "EMAIL")]
+    Email,
+    #[serde(rename = "VIDEO_CALL")]
+    VideoCall,
 }
 
 #[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]

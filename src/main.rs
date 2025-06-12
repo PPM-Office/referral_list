@@ -1,36 +1,27 @@
-// Jackson Coxson
-
-use std::collections::HashMap;
-
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use church::ChurchClient;
 use dialoguer::{theme::ColorfulTheme, Select};
-use indicatif::ProgressBar;
-use log::debug;
-use log::info;
+
+use crate::holly::scheduled_times::RefetchPolicy;
 
 mod bearer;
+mod cache;
 mod church;
 mod env;
 mod holly;
 mod persons;
-mod report;
 mod reports;
 
-const CLI_OPTIONS: [&str; 7] = [
-    "report",
-    "generate",
-    "average",
-    "zone_report",
+const CLI_OPTIONS: [&str; 5] = [
+    "All Mission Weekly",
+    "Zone Daily",
     "holly",
     "settings",
     "exit",
 ];
-const CLI_DESCRIPTONS: [&str; 7] = [
-    "Reads today's report of uncontacted referrals or fetches a new one",
-    "Generates a new list of uncontacted referrals, regardless of the cache.",
-    "Gets the average contact time in minutes between zones",
-    "Generates zone average",
+const CLI_DESCRIPTONS: [&str; 5] = [
+    "All mission average response time, found referrals, and sacrament attendance",
+    "Each Zone's average response time and uncontacted referrals",
     "Connects to Holly and responds to messages",
     "Change the settings for Holly",
     "Exits the program",
@@ -77,42 +68,29 @@ async fn main() {
 
 async fn parse_argument(arg: &str, church_client: &mut ChurchClient) -> anyhow::Result<bool> {
     match arg {
-        "report" => {
-            if let Some(report) = report::Report::read_report(&church_client.env)? {
-                println!("{}", report.pretty_print());
-            } else {
-                let report = generate_report(church_client).await?;
-                println!("{}", report.pretty_print());
-            }
-            Ok(true)
-        }
-        "generate" => {
-            generate_report(church_client).await?;
-            Ok(true)
-        }
-        "average" => {
+        "All Mission Weekly" => {
             let env = church_client.env.clone();
-            let holly_config = church_client.holly_config.clone().unwrap();
 
             let report =
                 reports::all_mission_report_weekly::AllMissionReportWeekly::generate_report(
                     church_client,
-                    holly_config,
+                    RefetchPolicy::RefetchAfter(Duration::hours(1)),
                 )
                 .await?;
 
-            let output = report.pretty_print_report(&env).await;
+            let output = report.pretty_print_report().await;
             report.save(&env)?;
             println!("{output}");
             Ok(true)
         }
-        "zone_report" => {
+        "Zone Daily" => {
             let env = church_client.env.clone();
             let holly_config = church_client.holly_config.clone().unwrap();
 
             let report = reports::zone_report_daily::ZoneReportDailyMap::generate_report(
                 church_client,
                 holly_config,
+                RefetchPolicy::RefetchAfter(Duration::hours(1)),
             )
             .await?;
             let output = report.pretty_print_report(&env).await;
@@ -147,44 +125,4 @@ async fn parse_argument(arg: &str, church_client: &mut ChurchClient) -> anyhow::
             "Unknown usage '{arg}' - run without arguments to see options"
         )),
     }
-}
-
-pub async fn generate_report(church_client: &mut ChurchClient) -> anyhow::Result<report::Report> {
-    let persons_list = church_client.get_cached_people_list().await?;
-    let now = Utc::now().naive_utc();
-    let persons_list: Vec<persons::Person> = persons_list
-        .into_iter()
-        .filter(|x| {
-            (x.referral_status != persons::ReferralStatus::Successful
-                && x.person_status < persons::PersonStatus::NewMember
-                && now.signed_duration_since(x.assigned_date) > Duration::hours(48))
-                || x.referral_status == persons::ReferralStatus::NotAttempted
-        })
-        .collect();
-    info!("{} uncontacted referrals", persons_list.len());
-
-    let mut report = report::Report::new();
-    let bar = ProgressBar::new(persons_list.len() as u64);
-    for person in persons_list {
-        bar.inc(1);
-        if match church_client.get_person_last_contact(&person).await? {
-            Some(t) => now.signed_duration_since(t) > Duration::hours(48),
-            None => true,
-        } {
-            report.add_person(person);
-        }
-    }
-
-    report.save_report(&church_client.env)?;
-    Ok(report)
-}
-
-pub fn pretty_print_average_areas(data: HashMap<String, (usize, usize)>) -> String {
-    let mut res = "".to_string();
-    for (area, (count, avg)) in data {
-        let hours = avg / 60;
-        let minutes = avg % 60;
-        res = format!("{res}\n{area}: ({count}) {hours}h {minutes}m");
-    }
-    res
 }

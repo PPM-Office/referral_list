@@ -9,6 +9,8 @@ use std::{
 use dialoguer::{theme::ColorfulTheme, Input};
 use serde::{Deserialize, Serialize};
 
+use crate::holly::scheduled_times::RefetchPolicy;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub last_transfer_start: i64,
@@ -48,7 +50,10 @@ impl Config {
         church_client: &mut crate::church::ChurchClient,
     ) -> anyhow::Result<()> {
         println!("Getting the newest data about zone chats...");
-        let person_list = church_client.get_cached_people_list().await?;
+        // TODO: make this cached people force not refetch one that feature is created
+        let person_list = church_client
+            .get_cached_people_list(|_| true, RefetchPolicy::NoRefetch, false)
+            .await?;
         let mut zones = Vec::new();
         let mut zone_ids = HashSet::new();
         for p in person_list {

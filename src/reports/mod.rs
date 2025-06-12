@@ -1,11 +1,12 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Local};
 use indicatif::ProgressBar;
+use log::info;
 use serde::{de::DeserializeOwned, Serialize};
 use zone_report_daily::{AreaAverageResponseTime, AreaUnattemptedCount};
 
-use crate::{church::ChurchClient, persons};
+use crate::persons::{self, Person};
 
 pub mod all_mission_report_weekly;
 pub mod zone_report_daily;
@@ -13,13 +14,18 @@ pub mod zone_report_nightly;
 
 pub fn load_reports<T: DeserializeOwned + Default>(
     env: &crate::env::Env,
+    date: Option<DateTime<Local>>,
     filename: &str,
 ) -> anyhow::Result<T> {
-    let today = chrono::Local::now();
-    let today_str = today.format("%Y-%m-%d").to_string();
+    let date = match date {
+        Some(date) => date,
+        None => chrono::Local::now(),
+    };
+
+    let date_str = date.format("%Y-%m-%d").to_string();
     let mut dir_path = PathBuf::from(&env.working_path);
     dir_path.push("reports");
-    dir_path.push(&today_str);
+    dir_path.push(&date_str);
 
     let mut file_path = dir_path.clone();
     file_path.push(filename);
@@ -82,71 +88,37 @@ pub async fn get_templates(env: &crate::env::Env) -> anyhow::Result<HashMap<Stri
     Ok(templates)
 }
 pub async fn get_average(
-    church_client: &mut ChurchClient,
     requested_zone: Option<String>,
-    require_refetch: bool,
-    span_of_days: i64
+    persons_list: Vec<Person>,
 ) -> anyhow::Result<AreaAverageResponseTime> {
-    let mut contacts = church_client.env.load_contacts()?;
-
-    let persons_list = church_client.get_cached_people_list().await?.to_vec();
-    let now = Utc::now().naive_utc();
-    let filtered: Vec<persons::Person> = persons_list
-        .into_iter()
-        .filter(|x| {
-            let zone_match = match &requested_zone {
-                Some(zone) => x.zone_name.as_ref() == Some(zone),
-                None => true,
-            };
-            zone_match
-                && x.referral_status != persons::ReferralStatus::NotAttempted
-                && (x.person_status < persons::PersonStatus::NewMember)
-                && now.signed_duration_since(x.assigned_date) < Duration::days(span_of_days)
-        })
-        .collect();
-
-    let mut zones = aggregate_zones_areas(filtered.clone(), |_person| {
+    let mut zones = aggregate_zones_areas(persons_list.clone(), |_person| {
         (Vec::<(String, String)>::new(), 0usize)
     });
 
-    let bar = ProgressBar::new(filtered.len() as u64);
-    for person in filtered {
+    info!("Caclulating average response time");
+    let bar = ProgressBar::new(persons_list.len() as u64);
+    for person in persons_list {
         bar.inc(1);
-        if let (Some(zone_name), Some(area_name)) = (&person.zone_name, &person.area_name) {
-            let t: usize = if require_refetch && requested_zone.as_ref() == Some(zone_name) {
-                if let Some(contact_time) = church_client.get_person_contact_time(&person).await? {
-                    contacts.insert(person.guid.clone(), contact_time);
-                    contact_time
-                } else {
-                    continue;
-                }
-            } else {
-                match contacts.get(&person.guid).cloned() {
-                    Some(t) => t,
-                    None => {
-                        if let Some(contact_time) =
-                            church_client.get_person_contact_time(&person).await?
-                        {
-                            contacts.insert(person.guid.clone(), contact_time);
-                            contact_time
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-            };
+        if person.response_time.is_none()
+            || person.zone_name.is_none()
+            || person.area_name.is_none()
+        {
+            continue;
+        }
 
-            if let Some(zone) = zones.get_mut(zone_name) {
-                if let Some(area) = zone.get_mut(area_name) {
-                    area.0
-                        .push((person.guid.clone(), person.first_name.clone()));
-                    area.1 += t;
-                }
+        let response_time = person.response_time.unwrap();
+        let zone_name = person.zone_name.as_ref().unwrap();
+        let area_name = person.area_name.as_ref().unwrap();
+
+        if let Some(zone) = zones.get_mut(zone_name) {
+            if let Some(area) = zone.get_mut(area_name) {
+                area.0
+                    .push((person.guid.clone(), person.first_name.clone()));
+                area.1 += response_time;
             }
         }
     }
 
-    church_client.env.save_contacts(&contacts)?;
     let mut res: AreaAverageResponseTime = HashMap::new();
 
     match requested_zone {
@@ -189,6 +161,7 @@ pub async fn get_average(
             );
         }
     }
+
     bar.finish();
     Ok(res)
 }
@@ -219,25 +192,15 @@ pub fn pretty_print_avg_response_time(
     return output;
 }
 
-pub async fn get_unattempted(
-    church_client: &mut ChurchClient,
+pub async fn get_uncontacted(
     requested_zone: Option<String>,
+    persons_list: Vec<Person>,
 ) -> anyhow::Result<AreaUnattemptedCount> {
-    let persons_list = church_client.get_cached_people_list().await?.to_vec();
-    let now = Utc::now().naive_utc();
-    let filtered: Vec<persons::Person> = persons_list
-        .into_iter()
-        .filter(|x| {
-            x.referral_status == persons::ReferralStatus::NotAttempted
-                && (x.person_status < persons::PersonStatus::NewMember)
-                && now.signed_duration_since(x.assigned_date) < Duration::weeks(1)
-        })
-        .collect();
+    let mut zones = aggregate_zones_areas(persons_list.clone(), |_person| {
+        Vec::<(String, String)>::new()
+    });
 
-    let mut zones =
-        aggregate_zones_areas(filtered.clone(), |_person| Vec::<(String, String)>::new());
-
-    for person in filtered {
+    for person in persons_list {
         if let (Some(zone_name), Some(area_name)) = (&person.zone_name, &person.area_name) {
             if let Some(zone) = zones.get_mut(zone_name) {
                 if let Some(area) = zone.get_mut(area_name) {

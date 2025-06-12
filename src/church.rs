@@ -2,6 +2,7 @@
 // Code to interact with church servers
 
 use std::{
+    collections::{HashMap, HashSet},
     io::Write,
     path::PathBuf,
     str::FromStr,
@@ -10,19 +11,28 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::{Duration, Local, NaiveDateTime, NaiveTime, Utc};
-use log::{info, warn};
+use chrono::{Local, NaiveDateTime, NaiveTime, Utc};
+use futures::future::join_all;
+use indicatif::ProgressBar;
+use log::{debug, info, warn};
 use reqwest::{redirect::Policy, Client};
 use reqwest_cookie_store::CookieStoreMutex;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::Mutex;
 
-use crate::{bearer::BearerToken, env, persons};
+use crate::{
+    bearer::BearerToken,
+    cache::PersonsCacheMap,
+    env,
+    holly::scheduled_times::RefetchPolicy,
+    persons::{self, Person, TimelineContactType, TimelineEvent, TimelineItemType},
+};
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 const MAX_RETRIES: u8 = 3;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChurchClient {
     http_client: Client,
     cookie_store: Arc<CookieStoreMutex>,
@@ -275,7 +285,15 @@ impl ChurchClient {
 
     /// Gets a cached list from referral manager to save trips to church servers.
     /// A cache will be considered 'hit' if the list is less than an hour old.
-    pub async fn get_cached_people_list(&mut self) -> anyhow::Result<Vec<persons::Person>> {
+    pub async fn get_cached_people_list<F>(
+        &mut self,
+        filter: F,
+        refetch_policy: RefetchPolicy,
+        apply_timeline_cache: bool,
+    ) -> anyhow::Result<Vec<Person>>
+    where
+        F: Fn(&Person) -> bool,
+    {
         let lists_path = PathBuf::from_str(&self.env.working_path)?.join("people_lists");
         std::fs::create_dir_all(&lists_path)?;
 
@@ -285,40 +303,128 @@ impl ChurchClient {
             .context("Your clock is wrong")?
             .as_secs();
 
-        // Read all the entries in the cache
-        for f in std::fs::read_dir(&lists_path)? {
-            match f {
-                Ok(f) if f.file_type()?.is_file() => {
-                    if let Ok(file_name) = f.file_name().into_string() {
-                        if let Some(file_name) = file_name.split_once('.') {
-                            if let Ok(timestamp) = file_name.0.parse::<u64>() {
-                                if let Some(diff) = now.checked_sub(timestamp) {
-                                    // TODO: Make this a configurable value
-                                    if diff < 60 * 60 {
-                                        info!("Cache hit");
-                                        return Ok(persons::Person::parse_lossy(
-                                            serde_json::from_str(
-                                                &std::fs::read_to_string(f.path()).unwrap(),
-                                            )?,
-                                        ));
-                                    }
-                                }
-                            }
+        let mut latest_time: u64 = 0;
+
+        for entry in std::fs::read_dir(&lists_path)? {
+            if let Some(timestamp) = extract_valid_file_timestamp(&entry, now) {
+                if latest_time < timestamp {
+                    latest_time = timestamp;
+                }
+                if let RefetchPolicy::RefetchAfter(duration) = refetch_policy {
+                    let diff = now.checked_sub(timestamp);
+                    if diff < Some(duration.num_seconds() as u64) {
+                        info!("Cache hit!");
+                        let lossy_person_list: Vec<Person> = persons::Person::parse_lossy(
+                            serde_json::from_str(&std::fs::read_to_string(entry?.path()).unwrap())?,
+                        )
+                        .into_iter()
+                        .filter(|p| filter(p))
+                        .collect();
+
+                        let _ = self.update_zone_and_area_ids(lossy_person_list.clone())?;
+
+                        if apply_timeline_cache {
+                            let list_with_timeline_cache = self
+                                .update_list_with_timeline_cache(lossy_person_list, refetch_policy)
+                                .await?;
+                            return Ok(list_with_timeline_cache);
                         }
+
+                        return Ok(lossy_person_list);
                     }
                 }
-                _ => (),
             }
         }
-        info!("Cache miss");
-        let list = self.get_people_list().await?;
+
+        if refetch_policy == RefetchPolicy::NoRefetch && latest_time > 0 {
+            info!("Using old cache");
+            let file_path = lists_path.join(format!("{latest_time}.json"));
+            let lossy_person_list: Vec<Person> = persons::Person::parse_lossy(
+                serde_json::from_str(&std::fs::read_to_string(file_path).unwrap())?,
+            )
+            .into_iter()
+            .filter(|p| filter(p))
+            .collect();
+
+            let _ = self.update_zone_and_area_ids(lossy_person_list.clone())?;
+
+            if apply_timeline_cache {
+                let list_with_timeline_cache = self
+                    .update_list_with_timeline_cache(lossy_person_list, refetch_policy)
+                    .await?;
+
+                return Ok(list_with_timeline_cache);
+            }
+
+            return Ok(lossy_person_list);
+        }
+
+        info!("Cache missed");
+        let mut list = self
+            .get_people_list()
+            .await?
+            .into_iter()
+            .filter(|p| filter(p))
+            .collect();
+
+        if apply_timeline_cache {
+            list = self
+                .update_list_with_timeline_cache(list, refetch_policy)
+                .await?;
+        }
+
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(lists_path.join(format!("{now}.json")))?;
+
         serde_json::to_writer(file, &json!({"persons": &list}))?;
+
+        let _ = self.update_zone_and_area_ids(list.clone())?;
+
         Ok(list)
+    }
+
+    fn update_zone_and_area_ids(&self, people_list: Vec<Person>) -> anyhow::Result<()> {
+        let zone_id_path = PathBuf::from_str(&self.env.working_path)?.join("zone_ids.json");
+        let area_id_oath = PathBuf::from_str(&self.env.working_path)?.join("area_ids.json");
+
+        let mut zone_ids = HashSet::new();
+        let mut zones = Vec::new();
+        let mut area_ids = HashSet::new();
+        let mut areas = Vec::new();
+
+        for person in people_list {
+            if let (Some(zone_name), Some(zone_id)) = (person.zone_name, person.zone_id) {
+                if zone_ids.insert(zone_id) {
+                    zones.push((zone_id, zone_name));
+                }
+            }
+            if let (Some(area_name), Some(area_id)) = (person.area_name, person.area_id) {
+                if area_ids.insert(area_id) {
+                    areas.push((area_id, area_name));
+                }
+            }
+        }
+
+        let zone_ids_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(zone_id_path)?;
+
+        serde_json::to_writer(zone_ids_file, &json!(zones))?;
+
+        let area_ids_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(area_id_oath)?;
+
+        serde_json::to_writer(area_ids_file, &json!(areas))?;
+
+        Ok(())
     }
 
     pub async fn get_person_timeline(
@@ -340,7 +446,7 @@ impl ChurchClient {
             {
                 if let Ok(list) = list.json::<serde_json::Value>().await {
                     let list = persons::TimelineEvent::parse_lossy(list);
-                    info!(
+                    debug!(
                         "Received {} timeline events from referral manager",
                         list.len()
                     );
@@ -357,25 +463,6 @@ impl ChurchClient {
         Err(anyhow::anyhow!("Max tries exceeded"))
     }
 
-    pub async fn get_person_last_contact(
-        &mut self,
-        person: &persons::Person,
-    ) -> anyhow::Result<Option<NaiveDateTime>> {
-        let timeline = self.get_person_timeline(person).await?;
-        for item in timeline {
-            match item.item_type {
-                persons::TimelineItemType::Contact | persons::TimelineItemType::Teaching => {
-                    return Ok(Some(item.item_date))
-                }
-                persons::TimelineItemType::NewReferral => return Ok(None),
-                _ => {
-                    continue;
-                }
-            }
-        }
-        Ok(None)
-    }
-
     fn utc_naive_to_local_time(naive_utc: NaiveDateTime) -> NaiveDateTime {
         let utc_dt = chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive_utc, Utc);
         let local_dt = utc_dt.with_timezone(&Local);
@@ -384,10 +471,8 @@ impl ChurchClient {
 
     pub async fn get_person_contact_time(
         &mut self,
-        person: &persons::Person,
+        timeline: &Vec<persons::TimelineEvent>,
     ) -> anyhow::Result<Option<usize>> {
-        let mut timeline = self.get_person_timeline(person).await?;
-        timeline.reverse();
         let mut referral_sent = None;
         let mut last_contact = None;
         for item in timeline {
@@ -397,7 +482,7 @@ impl ChurchClient {
                     last_contact = None;
                 }
                 persons::TimelineItemType::Contact | persons::TimelineItemType::Teaching => {
-                    if last_contact.is_none() {
+                    if item.status.is_some() && last_contact.is_none() {
                         last_contact = Some(item.item_date);
                     }
                 }
@@ -418,6 +503,7 @@ impl ChurchClient {
                 let referral_sent = Self::utc_naive_to_local_time(referral_sent);
                 let last_contact = Self::utc_naive_to_local_time(last_contact);
 
+                // TODO: move to a config file
                 let start_of_day = NaiveTime::from_hms_opt(10, 00, 0).unwrap();
                 let end_of_day = NaiveTime::from_hms_opt(22, 15, 0).unwrap();
 
@@ -458,6 +544,152 @@ impl ChurchClient {
         }
         None
     }
+
+    pub async fn get_timeline_stats(
+        &mut self,
+        timeline: &Vec<TimelineEvent>,
+    ) -> (
+        Option<usize>,
+        bool,
+        bool,
+        usize,
+        bool,
+        bool,
+        bool,
+        Option<usize>,
+    ) {
+        let response_time = match self.get_person_contact_time(timeline).await {
+            Ok(response_time) => response_time,
+            Err(_) => None,
+        };
+        let mut has_attended_sacrament: bool = false;
+        let mut has_attended_since_last_referral: bool = false;
+        let mut sacrament_attendance_count: usize = 0;
+        let mut has_been_taught: bool = false;
+        let mut has_been_taught_in_person: bool = false;
+        let mut has_been_taught_since_last_referral: bool = false;
+        let mut referral_count: Option<usize> = None;
+
+        for event in timeline {
+            if event.item_type == TimelineItemType::Sacrament {
+                sacrament_attendance_count += 1;
+                has_attended_sacrament = true;
+                has_attended_since_last_referral = true;
+            }
+            if let Some(status) = event.status {
+                if event.item_type == TimelineItemType::Teaching && status {
+                    has_been_taught = true;
+                    if let Some(contact_type) = &event.contact_type {
+                        if contact_type == &TimelineContactType::InPerson {
+                            has_been_taught_in_person = true;
+                        }
+                    }
+                }
+            }
+
+            if event.item_type == TimelineItemType::NewReferral {
+                referral_count = match referral_count {
+                    Some(count) => Some(count + 1),
+                    None => Some(1),
+                };
+                has_attended_since_last_referral = false;
+                has_been_taught_since_last_referral = false;
+            }
+        }
+
+        (
+            response_time,
+            has_attended_sacrament,
+            has_attended_since_last_referral,
+            sacrament_attendance_count,
+            has_been_taught,
+            has_been_taught_in_person,
+            has_been_taught_since_last_referral,
+            referral_count,
+        )
+    }
+
+    async fn update_list_with_timeline_cache(
+        &self,
+        persons_list: Vec<Person>,
+        refetch_policy: RefetchPolicy,
+    ) -> anyhow::Result<Vec<Person>> {
+        let initial_cache_map = PersonsCacheMap::get_cache(self.env.clone());
+        let initial_cache_map = match initial_cache_map {
+            Ok(r) => r,
+            Err(_) => PersonsCacheMap(HashMap::new()),
+        };
+        let cache_map = Arc::new(Mutex::new(initial_cache_map));
+        let client = Arc::new(Mutex::new(self.clone())); // clone self once
+        let mut tasks = vec![];
+
+        let persons_arc: Vec<_> = persons_list
+            .into_iter()
+            .map(|p| Arc::new(Mutex::new(p)))
+            .collect();
+
+        info!("Applying timeline cache");
+        let bar = Arc::new(Mutex::new(ProgressBar::new(persons_arc.len() as u64)));
+
+        for person_arc in &persons_arc {
+            let person = Arc::clone(&person_arc);
+            let cache_map = Arc::clone(&cache_map);
+            let client = Arc::clone(&client);
+            let bar = Arc::clone(&bar);
+
+            let task = tokio::spawn(async move {
+                let mut person_guard = person.lock().await;
+                let mut cache_lock = cache_map.lock().await;
+                let mut client_lock = client.lock().await;
+                let bar_lock = bar.lock().await;
+
+                person_guard
+                    .apply_cache(&mut client_lock, &mut cache_lock, refetch_policy)
+                    .await;
+
+                bar_lock.inc(1);
+
+                person_guard.clone()
+            });
+
+            tasks.push(task);
+        }
+        let updated_list: Vec<Person> = join_all(tasks)
+            .await
+            .into_iter()
+            .filter_map(|res| res.ok()) // filter out any task failures
+            .collect();
+
+        Arc::try_unwrap(bar)
+            .expect("Bar references failed to drop")
+            .into_inner()
+            .finish();
+
+        let cache_guard = Arc::try_unwrap(cache_map)
+            .expect("All references should be dropped")
+            .into_inner();
+
+        let _ = cache_guard.save_cache(self.clone().env);
+
+        return Ok(updated_list);
+    }
+}
+
+fn extract_valid_file_timestamp(
+    entry: &std::io::Result<std::fs::DirEntry>,
+    now: u64,
+) -> Option<u64> {
+    let entry = entry.as_ref().ok()?;
+
+    if !entry.file_type().ok()?.is_file() {
+        return None;
+    }
+
+    let file_name = entry.file_name().into_string().ok()?;
+    let (timestamp_str, _) = file_name.split_once('.')?;
+    let timestamp = timestamp_str.parse::<u64>().ok()?;
+
+    Some(timestamp)
 }
 
 /// Function to decode escape sequences including \xNN

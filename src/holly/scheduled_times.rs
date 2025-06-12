@@ -3,7 +3,7 @@
 use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use anyhow::Context;
-use chrono::{Days, Duration, NaiveDateTime, NaiveTime, Weekday, Datelike};
+use chrono::{Datelike, Days, Duration, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -12,6 +12,36 @@ pub enum Frequency {
     Weekly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum RefetchPolicy {
+    ForceRefetch,
+    NoRefetch,
+    #[serde(with = "duration_hours")]
+    RefetchAfter(Duration),
+}
+
+mod duration_hours {
+    use chrono::Duration;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_i64(duration.num_hours())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hours = i64::deserialize(deserializer)?;
+        Ok(Duration::hours(hours))
+    }
+}
+
+// TODO: add refetch options control here
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScheduleEntry {
     pub last: NaiveDateTime,
@@ -21,9 +51,9 @@ pub struct ScheduleEntry {
     pub send_time: NaiveTime,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub day: Option<Weekday>,
+    pub refetch_policy: RefetchPolicy,
 }
 
-// Custom (de)serializer for "HH:MM" time format
 mod time_format {
     use chrono::NaiveTime;
     use serde::{self, Deserialize, Deserializer, Serializer};
@@ -63,7 +93,8 @@ impl ScheduleEntry {
                     let mut next_date = now.date();
                     let current_weekday = next_date.weekday();
                     let mut days_ahead = (target_weekday.num_days_from_monday() + 7
-                        - current_weekday.num_days_from_monday()) % 7;
+                        - current_weekday.num_days_from_monday())
+                        % 7;
                     // If today is the day but time has passed, schedule for next week
                     if days_ahead == 0 && now.time() >= self.send_time {
                         days_ahead = 7;
@@ -95,7 +126,6 @@ impl ScheduleEntry {
 }
 
 pub struct SendTimeStore;
-
 
 impl SendTimeStore {
     fn file_path(env: &crate::env::Env) -> anyhow::Result<PathBuf> {

@@ -12,7 +12,7 @@ use tokio::{
 use crate::{church::ChurchClient, reports};
 
 pub mod config;
-mod scheduled_times;
+pub mod scheduled_times;
 pub mod send_message;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -83,7 +83,8 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                                     reports::zone_report_daily::ZoneReportDailyMap::send_report_to_holly(
                                         &mut stream,
                                         church_client, 
-                                        holly_config.clone()
+                                        holly_config.clone(),
+                                        entry.refetch_policy
                                     ).await?,
                                 // "zone_nightly" => {},
                                 // "all_mission_weekly" => {},

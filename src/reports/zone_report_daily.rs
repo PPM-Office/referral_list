@@ -1,17 +1,17 @@
 use crate::{
     church::ChurchClient,
-    holly::{self, send_message::send_message},
-    reports::{get_average, load_reports, save_report},
+    holly::{self, scheduled_times::RefetchPolicy, send_message::send_message},
+    persons::{self, Person},
+    reports::{get_average, get_uncontacted, load_reports, save_report},
 };
 use std::collections::HashMap;
 
+use chrono::{Duration, Utc};
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 
-use super::{
-    get_templates, get_unattempted, get_zone_name_from_id, pretty_print_avg_response_time,
-};
+use super::{get_templates, get_zone_name_from_id, pretty_print_avg_response_time};
 
 pub type AreaAverageResponseTime = HashMap<String, (Vec<(String, String)>, usize)>;
 pub type AreaUnattemptedCount = HashMap<String, Vec<(String, String)>>;
@@ -19,7 +19,7 @@ pub type AreaUnattemptedCount = HashMap<String, Vec<(String, String)>>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ZoneReportDaily {
     pub area_avg_response_time: AreaAverageResponseTime,
-    pub area_unattempted_count: AreaUnattemptedCount,
+    pub area_uncontacted_referrals: AreaUnattemptedCount,
 }
 
 impl ZoneReportDaily {
@@ -27,18 +27,18 @@ impl ZoneReportDaily {
         let mut result = HashMap::new();
         let area_avg_response_time =
             pretty_print_avg_response_time(self.area_avg_response_time.clone());
-        let mut area_unattempted_count = String::new();
+        let mut area_uncontacted_count = String::new();
 
-        let mut unattempted_entries: Vec<_> = self.area_unattempted_count.iter().collect();
-        unattempted_entries.sort_by_key(|(area_name, _)| *area_name);
+        let mut uncontacted_entries: Vec<_> = self.area_uncontacted_referrals.iter().collect();
+        uncontacted_entries.sort_by_key(|(area_name, _)| *area_name);
 
-        for (area_name, people) in unattempted_entries {
+        for (area_name, people) in uncontacted_entries {
             let count = people.len();
-            area_unattempted_count.push_str(&format!("{area_name}: {count}\n"));
+            area_uncontacted_count.push_str(&format!("{area_name}: {count}\n"));
         }
 
         result.insert("area_avg_response_time".to_string(), area_avg_response_time);
-        result.insert("area_unattempted_count".to_string(), area_unattempted_count);
+        result.insert("area_uncontacted_count".to_string(), area_uncontacted_count);
         result
     }
 }
@@ -50,6 +50,7 @@ impl ZoneReportDailyMap {
     pub async fn generate_report(
         church_client: &mut ChurchClient,
         holly_config: holly::config::Config,
+        refetch_policy: RefetchPolicy,
     ) -> anyhow::Result<Self> {
         let report = Self::load(&church_client.env)?;
         if !report.0.is_empty() {
@@ -58,17 +59,42 @@ impl ZoneReportDailyMap {
 
         let mut new_map = HashMap::new();
 
+        let now = Utc::now().naive_utc();
+
+        let zone_average_filter = |person: &Person| -> bool {
+            person.referral_status != persons::ReferralStatus::NotAttempted
+                && (person.person_status < persons::PersonStatus::NewMember)
+                && now.signed_duration_since(person.assigned_date) < Duration::days(1)
+        };
+
+        let zone_uncontacted_filter = |person: &Person| -> bool {
+            person.referral_status != persons::ReferralStatus::Successful
+                && (person.person_status < persons::PersonStatus::NewMember)
+                && now.signed_duration_since(person.assigned_date) < Duration::days(1)
+        };
+
+        let area_average_persons_list = church_client
+            .get_cached_people_list(zone_average_filter, refetch_policy, true)
+            .await?;
+
+        let area_uncontacted_persons_list = church_client
+            .get_cached_people_list(zone_uncontacted_filter, RefetchPolicy::NoRefetch, false)
+            .await?;
+
         for (zone_id, _) in holly_config.zone_chats {
             let zone_name = get_zone_name_from_id(&church_client.env, zone_id);
+
             let area_avg_response_time =
-                get_average(church_client, zone_name.clone(), true, 1).await?;
-            let area_unattempted_count = get_unattempted(church_client, zone_name.clone()).await?;
+                get_average(zone_name.clone(), area_average_persons_list.clone()).await?;
+
+            let area_uncontacted_referrals =
+                get_uncontacted(zone_name.clone(), area_uncontacted_persons_list.clone()).await?;
 
             new_map.insert(
                 zone_id,
                 ZoneReportDaily {
                     area_avg_response_time,
-                    area_unattempted_count,
+                    area_uncontacted_referrals,
                 },
             );
         }
@@ -76,7 +102,7 @@ impl ZoneReportDailyMap {
     }
 
     fn load(env: &crate::env::Env) -> anyhow::Result<Self> {
-        load_reports(env, "zone_report_daily.json")
+        load_reports(env, None, "zone_report_daily.json")
     }
 
     pub fn save(&self, env: &crate::env::Env) -> anyhow::Result<()> {
@@ -87,9 +113,11 @@ impl ZoneReportDailyMap {
         stream: &mut TcpStream,
         church_client: &mut ChurchClient,
         holly_config: holly::config::Config,
+        refetch_policy: RefetchPolicy,
     ) -> anyhow::Result<()> {
         info!("Sending daily zone report to Holly...");
-        let report = Self::generate_report(church_client, holly_config.clone()).await?;
+        let report =
+            Self::generate_report(church_client, holly_config.clone(), refetch_policy).await?;
         let templates = get_templates(&church_client.env).await.unwrap();
         let template = templates
             .get("zone_report_daily")
@@ -108,9 +136,9 @@ impl ZoneReportDailyMap {
                         .unwrap_or(&"".to_string()),
                 )
                 .replace(
-                    "{area_unattempted_count}",
+                    "{area_uncontacted_count}",
                     &vars
-                        .get("area_unattempted_count")
+                        .get("area_uncontacted_count")
                         .unwrap_or(&"".to_string()),
                 );
 
