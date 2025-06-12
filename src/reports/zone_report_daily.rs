@@ -118,6 +118,8 @@ impl ZoneReportDailyMap {
         info!("Sending daily zone report to Holly...");
         let report =
             Self::generate_report(church_client, holly_config.clone(), refetch_policy).await?;
+        report.save(&church_client.env)?;
+
         let templates = get_templates(&church_client.env).await.unwrap();
         let template = templates
             .get("zone_report_daily")
