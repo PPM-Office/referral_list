@@ -362,16 +362,7 @@ impl ChurchClient {
         info!("Cache missed");
         let mut list = self
             .get_people_list()
-            .await?
-            .into_iter()
-            .filter(|p| filter(p))
-            .collect();
-
-        if apply_timeline_cache {
-            list = self
-                .update_list_with_timeline_cache(list, refetch_policy)
-                .await?;
-        }
+            .await?;
 
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -382,6 +373,17 @@ impl ChurchClient {
         serde_json::to_writer(file, &json!({"persons": &list}))?;
 
         let _ = self.update_zone_and_area_ids(list.clone())?;
+
+        list = list
+            .into_iter()
+            .filter(|p| filter(p))
+            .collect();
+
+        if apply_timeline_cache {
+            list = self
+                .update_list_with_timeline_cache(list, refetch_policy)
+                .await?;
+        }
 
         Ok(list)
     }
