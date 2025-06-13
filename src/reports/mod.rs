@@ -130,7 +130,13 @@ pub async fn get_average(
                     let count = people.len();
                     zone_total_people.extend(people.iter().cloned());
                     zone_total_time += total_time;
-                    res.insert(area.clone(), (people.to_vec(), total_time / count));
+                    let avg = if zone_total_time > 0 {
+                        zone_total_time / count
+                    } else {
+                        0
+                    };
+
+                    res.insert(area.clone(), (people.to_vec(), avg));
                 }
                 res.insert(
                     "Zone Total".to_string(),
