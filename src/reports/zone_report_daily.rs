@@ -27,18 +27,18 @@ impl ZoneReportDaily {
         let mut result = HashMap::new();
         let area_avg_response_time =
             pretty_print_avg_response_time(self.area_avg_response_time.clone());
-        let mut area_uncontacted_count = String::new();
+        let mut area_uncontacted_referrals = String::new();
 
         let mut uncontacted_entries: Vec<_> = self.area_uncontacted_referrals.iter().collect();
         uncontacted_entries.sort_by_key(|(area_name, _)| *area_name);
 
         for (area_name, people) in uncontacted_entries {
             let count = people.len();
-            area_uncontacted_count.push_str(&format!("{area_name}: {count}\n"));
+            area_uncontacted_referrals.push_str(&format!("{area_name}: {count}\n"));
         }
 
         result.insert("area_avg_response_time".to_string(), area_avg_response_time);
-        result.insert("area_uncontacted_count".to_string(), area_uncontacted_count);
+        result.insert("area_uncontacted_referrals".to_string(), area_uncontacted_referrals);
         result
     }
 }
@@ -70,7 +70,7 @@ impl ZoneReportDailyMap {
         let zone_uncontacted_filter = |person: &Person| -> bool {
             person.referral_status != persons::ReferralStatus::Successful
                 && (person.person_status < persons::PersonStatus::NewMember)
-                && now.signed_duration_since(person.assigned_date) < Duration::days(1)
+                && now.signed_duration_since(person.assigned_date) < Duration::days(7)
         };
 
         let area_average_persons_list = church_client
@@ -138,9 +138,9 @@ impl ZoneReportDailyMap {
                         .unwrap_or(&"".to_string()),
                 )
                 .replace(
-                    "{area_uncontacted_count}",
+                    "{area_uncontacted_referrals}",
                     &vars
-                        .get("area_uncontacted_count")
+                        .get("area_uncontacted_referrals")
                         .unwrap_or(&"".to_string()),
                 );
 
@@ -157,7 +157,8 @@ impl ZoneReportDailyMap {
                 output.push_str(&format!("{zone_name}:\n"));
                 let vars = zone_report.get_vars_for_template();
 
-                let report: Vec<&str> = vars.values().clone().map(|s| s.as_str()).collect();
+                let mut report: Vec<&str> = vars.values().clone().map(|s| s.as_str()).collect();
+                report.sort();
 
                 output.push_str(&format!(
                     "Average Response time:\n{}\nUnattempted Contacted Referrals:\n{}\n",
