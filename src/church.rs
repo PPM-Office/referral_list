@@ -306,7 +306,7 @@ impl ChurchClient {
         let mut latest_time: u64 = 0;
 
         for entry in std::fs::read_dir(&lists_path)? {
-            if let Some(timestamp) = extract_valid_file_timestamp(&entry, now) {
+            if let Some(timestamp) = extract_valid_file_timestamp(&entry) {
                 if latest_time < timestamp {
                     latest_time = timestamp;
                 }
@@ -678,9 +678,7 @@ impl ChurchClient {
 }
 
 fn extract_valid_file_timestamp(
-    entry: &std::io::Result<std::fs::DirEntry>,
-    now: u64,
-) -> Option<u64> {
+    entry: &std::io::Result<std::fs::DirEntry>) -> Option<u64> {
     let entry = entry.as_ref().ok()?;
 
     if !entry.file_type().ok()?.is_file() {
