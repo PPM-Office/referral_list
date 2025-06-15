@@ -114,7 +114,7 @@ pub async fn get_average(
             if let Some(area) = zone.get_mut(area_name) {
                 area.0
                     .push((person.guid.clone(), person.first_name.clone()));
-                area.1 += response_time;
+                area.1 = response_time;
             }
         }
     }
@@ -130,8 +130,8 @@ pub async fn get_average(
                     let count = people.len();
                     zone_total_people.extend(people.iter().cloned());
                     zone_total_time += total_time;
-                    let avg = if zone_total_time > 0 {
-                        zone_total_time / count
+                    let avg = if count > 0 {
+                        total_time / count
                     } else {
                         0
                     };

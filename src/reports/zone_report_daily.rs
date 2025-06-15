@@ -162,7 +162,7 @@ impl ZoneReportDailyMap {
 
                 output.push_str(&format!(
                     "Average Response time:\n{}\nUnattempted Contacted Referrals:\n{}\n",
-                    report[0], report[1]
+                    report[1], report[0]
                 ));
             }
         }
