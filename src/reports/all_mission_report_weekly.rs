@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
 use chrono::{Duration, Utc};
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
+use tokio::net::TcpStream;
 
 use crate::{
     church::ChurchClient,
-    holly::scheduled_times::RefetchPolicy,
+    holly::{self, scheduled_times::RefetchPolicy, send_message::send_message},
     persons::{self, Person, PersonStatus},
+    reports::get_templates,
 };
 
 use super::{get_average, load_reports, pretty_print_avg_response_time, save_report};
@@ -87,6 +90,49 @@ impl AllMissionReportWeekly {
 
         let output = format!("Average Response Time:\n{zone_average}\n\nPercent Referrals Taught: {}/{} ({})\nReferrals at Sacrament Meeting: {}", self.referrals_found.len(), self.referrals_received_count, percentage, self.referrals_at_church.len());
         output
+    }
+    pub async fn send_report_to_holly(
+        stream: &mut TcpStream,
+        church_client: &mut ChurchClient,
+        holly_config: holly::config::Config,
+        refetch_policy: RefetchPolicy,
+    ) -> anyhow::Result<()> {
+        info!("Sending all mission weekly report to Holly...");
+        let report = Self::generate_report(church_client, refetch_policy).await?;
+        report.save(&church_client.env)?;
+
+        let templates = get_templates(&church_client.env).await.unwrap();
+        let template = templates
+            .get("all_mission_report_weekly")
+            .ok_or_else(|| anyhow::anyhow!("Template 'all mission weekly' not found"))?;
+
+        let percentage = if report.referrals_received_count != 0 {
+            format!(
+                "{:.2}%",
+                (report.referrals_found.len() as f64 / report.referrals_received_count as f64)
+                    * 100.0
+            )
+        } else {
+            "N/A".to_string()
+        };
+
+        let chat_id = holly_config.all_mission_chat.unwrap();
+
+        let message = template
+            .replace(
+                "{avg_zone_response_times}",
+                &pretty_print_avg_response_time(report.zone_avg_response_time),
+            )
+            .replace("{percent_referrals_taught}", &percentage)
+            .replace(
+                "{numb_of_referrals_at_sacrament}",
+                &report.referrals_at_church.len().to_string(),
+            );
+
+        debug!("chat_id: {chat_id}, message: {message}");
+        send_message(stream, message, chat_id.clone()).await?;
+
+        Ok(())
     }
 }
 

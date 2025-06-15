@@ -3,11 +3,7 @@
 use log::{error, info};
 use scheduled_times::SendTimeStore;
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncReadExt},
-    sync::mpsc::UnboundedSender,
-    time::sleep_until,
-};
+use tokio::{io::AsyncReadExt, sync::mpsc::UnboundedSender, time::sleep_until};
 
 use crate::{church::ChurchClient, reports};
 
@@ -79,15 +75,18 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                     for (name, entry) in schedules.iter_mut() {
                         if entry.is_go_time() {
                             match name.as_str() {
-                                "zone_daily" => 
+                                "zone_daily" =>
                                     reports::zone_report_daily::ZoneReportDailyMap::send_report_to_holly(
                                         &mut stream,
-                                        church_client, 
+                                        church_client,
                                         holly_config.clone(),
                                         entry.refetch_policy
                                     ).await?,
                                 // "zone_nightly" => {},
-                                // "all_mission_weekly" => {},
+                                "all_mission_weekly" => {
+                                    info!("This is working");
+                                    reports::all_mission_report_weekly::AllMissionReportWeekly::send_report_to_holly(&mut stream, church_client, holly_config.clone(), entry.refetch_policy).await?;
+                                }
                                 _ => ()
                             }
                         }

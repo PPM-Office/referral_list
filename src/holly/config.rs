@@ -15,6 +15,7 @@ use crate::holly::scheduled_times::RefetchPolicy;
 pub struct Config {
     pub last_transfer_start: i64,
     pub zone_chats: HashMap<usize, String>,
+    pub all_mission_chat: Option<String>,
     pub unassigned_chat: Option<String>,
     pub holly_socket: String,
     pub name: String,
@@ -154,6 +155,7 @@ impl Default for Config {
             holly_socket: "127.0.0.1:8011".to_string(),
             name: "Holly".to_string(),
             blacklist: None,
+            all_mission_chat: None
         }
     }
 }
