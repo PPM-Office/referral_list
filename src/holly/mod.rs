@@ -1,11 +1,11 @@
 // Jackson Coxson
 
-use log::{error, info};
+use log::{ error, info };
 use scheduled_times::SendTimeStore;
-use serde::{Deserialize, Serialize};
-use tokio::{io::AsyncReadExt, sync::mpsc::UnboundedSender, time::sleep_until};
+use serde::{ Deserialize, Serialize };
+use tokio::{ io::AsyncReadExt, sync::mpsc::UnboundedSender, time::sleep_until };
 
-use crate::{church::ChurchClient, reports};
+use crate::{ church::ChurchClient, reports };
 
 pub mod config;
 pub mod scheduled_times;
@@ -26,8 +26,7 @@ impl Message {
 
 pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
     info!("Connecting to Holly...");
-    let holly_config = church_client
-        .holly_config
+    let holly_config = church_client.holly_config
         .clone()
         .unwrap_or(config::Config::force_load(church_client).await?);
 
@@ -37,9 +36,10 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
     loop {
         let mut stream = tokio::net::TcpStream::connect(&holly_config.holly_socket).await?;
         let mut next_time_check = tokio::time::Instant::now() + tokio::time::Duration::from_secs(1);
-        if loop {
-            let mut buf = [0u8; 1024 * 8];
-            tokio::select! {
+        if (
+            loop {
+                let mut buf = [0u8; 1024 * 8];
+                tokio::select! {
                 written = stream.read(&mut buf) => {
                     let written = match written {
                         Ok(w) => w,
@@ -83,10 +83,8 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                                         entry.refetch_policy
                                     ).await?,
                                 // "zone_nightly" => {},
-                                "all_mission_weekly" => {
-                                    info!("This is working");
-                                    reports::all_mission_report_weekly::AllMissionReportWeekly::send_report_to_holly(&mut stream, church_client, holly_config.clone(), entry.refetch_policy).await?;
-                                }
+                                "all_mission_weekly" =>
+                                    reports::all_mission_report_weekly::AllMissionReportWeekly::send_report_to_holly(&mut stream, church_client, holly_config.clone(), entry.refetch_policy).await?,
                                 _ => ()
                             }
                         }
@@ -98,7 +96,8 @@ pub async fn main(church_client: &mut ChurchClient) -> anyhow::Result<()> {
                     break true;
                 }
             }
-        } {
+            }
+        ) {
             break;
         }
     }
