@@ -121,7 +121,8 @@ impl ChurchClient {
             .send()
             .await?
             .text()
-            .await?;
+            .await
+            .with_context(|| "Failed to parse initial login")?;
 
         // Extract the JSON embedded in the HTML
         let start_token = "\"stateToken\":\"";
@@ -142,15 +143,33 @@ impl ChurchClient {
             return Err(anyhow::anyhow!("Invalid indices for stateToken extraction"));
         }
 
-        let state_token = &res[start_index..end_index];
-        let state_token = decode_escape_sequences(state_token)?;
-        let state_token: String = serde_json::from_str(&format!("\"{state_token}\"")).unwrap();
+        let stripped_token = &res[start_index..end_index];
+        let decoded_token = decode_escape_sequences(stripped_token)?;
+        let state_token: String = serde_json::from_str(&format!("\"{decoded_token}\"")).unwrap();
 
-        #[derive(Deserialize)]
-        struct StateHandle {
+        #[derive(Deserialize, Debug)]
+        struct AuthenticatorValues {
+            id: String
+        }
+
+        #[derive(Deserialize, Debug)]
+        struct Authenticator {
+            value: Vec<AuthenticatorValues>
+        }
+
+        #[derive(Deserialize, Debug)]
+        struct UsernameResponse {
             #[serde(rename = "stateHandle")]
             state_handle: String,
+            authenticators: Authenticator
         }
+
+        #[derive(Deserialize, Debug)]
+        struct StateHandle {
+            #[serde(rename = "stateHandle")]
+            state_handle: String
+        }
+        
         // Trade the state token for the state handle
         info!("Trading the token for the state handle");
         let state_handle = self
@@ -162,7 +181,8 @@ impl ChurchClient {
             .send()
             .await?
             .json::<StateHandle>()
-            .await?
+            .await
+            .with_context(|| "Failed to parse state handle")?
             .state_handle;
 
         // Send the username
@@ -172,7 +192,8 @@ impl ChurchClient {
             "identifier": self.env.church_username
         })
         .to_string();
-        let state_handle = self
+
+        let username_response = self
             .http_client
             .post("https://id.churchofjesuschrist.org/idp/idx/identify")
             .header("Content-Type", "application/json")
@@ -180,30 +201,55 @@ impl ChurchClient {
             .body(body)
             .send()
             .await?
-            .json::<StateHandle>()
-            .await?
-            .state_handle;
+            .json::<UsernameResponse>()
+            .await
+            .with_context(|| "Failed to parse username response")?;
 
+        let id = username_response.authenticators.value[1].id.clone();
+        let state_handle = username_response.state_handle.clone();
+
+        let first_challenge_body = json!({
+            "stateHandle": state_handle,
+            "authenticator": {
+                "id": id,
+            }
+        })
+        .to_string();
+
+        info!("Sending first challenge");
+        let first_challenge_state_handle = self
+            .http_client
+            .post("https://id.churchofjesuschrist.org/idp/idx/challenge")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(first_challenge_body)
+            .send()
+            .await?
+            .json::<StateHandle>()
+            .await
+            .with_context(|| "Failed to parse first challenge")?
+            .state_handle;
         // Send the password
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Debug)]
         struct PasswordResponse {
             success: SuccessResponse,
         }
 
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Debug)]
         struct SuccessResponse {
             href: String,
         }
 
         info!("Sending the password");
         let body = json!({
-            "stateHandle": state_handle,
+            "stateHandle": first_challenge_state_handle,
             "credentials": {
                 "passcode": self.env.church_password
             }
         })
         .to_string();
-        let res = self
+
+        let password_response = self
             .http_client
             .post("https://id.churchofjesuschrist.org/idp/idx/challenge/answer")
             .header("Content-Type", "application/json")
@@ -212,11 +258,12 @@ impl ChurchClient {
             .send()
             .await?
             .json::<PasswordResponse>()
-            .await?;
+            .await
+            .with_context(|| "Failed to parse password response")?;
 
         // Set cookies
         info!("Getting the success href");
-        self.http_client.get(res.success.href).send().await?;
+        self.http_client.get(password_response.success.href).send().await?;
 
         // Get the bearer token
         info!("Getting the bearer token");
